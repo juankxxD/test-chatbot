@@ -1,94 +1,87 @@
-// const TelegramBot = require('node-telegram-bot-api');
-// const { enviarCorreo } = require('./email');
+import express from "express";
+import axios from "axios";
+import dotenv from "dotenv";
 
-// // Reemplaza 'YOUR_TELEGRAM_BOT_TOKEN' con el token que obtuviste de BotFather
-// const token = '7005393352:AAHj_eVkEXO_ksK-uArREMVgNWuBcyw0alU';
-
-// Crea un bot que usa 'polling' para obtener nuevas actualizaciones
-// const bot = new TelegramBot(token, { polling: true });
-// let userSteps = {};
-// // Manejar el evento 'message'
-// bot.on('message', (msg) => {
-//     try{
-
-//         const chatId = msg.chat.id;
-//         const text = msg.text.toLowerCase();
-      
-//         console.log(text);
-      
-//         if (text.includes('hola')) {
-//           bot.sendMessage(chatId, '¡Hola! ¿Cómo puedo ayudarte?');
-//         } else if (text.includes('reservar')) {
-//           bot.sendMessage(chatId, 'Claro, ¿para qué fecha y hora te gustaría reservar tu cita?');
-//         } else if (text.includes('enviar correo')) {
-//           bot.sendMessage(chatId, 'Por favor, proporciona el nombre de la persona a la que deseas enviar el correo:');
-//           userSteps[chatId] = 'waiting_for_name';
-//         } else if (userSteps[chatId] === 'waiting_for_name') {
-//           const name = text;
-//           enviarCorreo(bot, chatId, name);
-//           delete userSteps[chatId]; // Reset the state for the user
-//         } else if (text.includes('muchachos')) {
-//           bot.sendMessage(chatId, 'Nicolas y dlaa, bot creado jeje');
-//         } else {
-//           bot.sendMessage(chatId, 'Lo siento, no entiendo tu mensaje en este momento.');
-//         }
-//     } catch(e) {
-//         console.log(e);
-//     }
-//   });
-
-
-
-const express = require('express');
-const bodyParser = require('body-parser');
+// Cargar las variables de entorno desde .env
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+app.use(express.json());
 
-app.use(bodyParser.json());
+const { WEBHOOK_VERIFY_TOKEN, GRAPH_API_TOKEN, PORT } = process.env;
 
-app.get('', (req, res) => {
-    res.json({
-        ok: true,
-        msg: 'Funciono melo'
-    })
-})
+app.post("/webhook", async (req, res) => {
+  // log incoming messages
+  console.log("Incoming webhook message:", JSON.stringify(req.body, null, 2));
 
-app.post('/webhook', (req, res) => {
-  const message = req.body;
-  const text = message.text.body; // Obtén el texto del mensaje
+  // check if the webhook request contains a message
+  // details on WhatsApp text message payload: https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/payload-examples#text-messages
+  const message = req.body.entry?.[0]?.changes[0]?.value?.messages?.[0];
 
-  let response;
-  if (text === 'Hola') {
-      response = '¡Hola! ¿Cómo puedo ayudarte hoy?';
-  } else {
-      response = 'Lo siento, no entiendo tu mensaje.';
+  // check if the incoming message contains text
+  if (message?.type === "text") {
+    // extract the business number to send the reply from it
+    const business_phone_number_id =
+      req.body.entry?.[0].changes?.[0].value?.metadata?.phone_number_id;
+
+    // send a reply message as per the docs here https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages
+    await axios({
+      method: "POST",
+      url: `https://graph.facebook.com/v18.0/${business_phone_number_id}/messages`,
+      headers: {
+        Authorization: `Bearer ${GRAPH_API_TOKEN}`,
+      },
+      data: {
+        messaging_product: "whatsapp",
+        to: message.from,
+        text: { body: "Echo: " + message.text.body },
+        context: {
+          message_id: message.id, // shows the message as a reply to the original user message
+        },
+      },
+    });
+
+    // mark incoming message as read
+    await axios({
+      method: "POST",
+      url: `https://graph.facebook.com/v18.0/${business_phone_number_id}/messages`,
+      headers: {
+        Authorization: `Bearer ${GRAPH_API_TOKEN}`,
+      },
+      data: {
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: message.id,
+      },
+    });
   }
-
-  // Envía la respuesta usando la API de WhatsApp
-  sendMessage(message.from, response);
 
   res.sendStatus(200);
 });
 
-function sendMessage(to, text) {
-  const axios = require('axios');
-  axios.post('https://graph.facebook.com/v19.0/344980988700663/messages', {
-      messaging_product: 'whatsapp',
-      to: to,
-      text: { body: text }
-  }, {
-      headers: {
-          'Authorization': 'Bearer EAAGTdpyLJv0BOzY1YKxk6ThnGZAMnQDMG11KZCguHgUs7jzk56cnZCcUkhgG1QMX8VdPe04kttDkJzK5tlkrhZAvLJOujthDT8T8Rr4xgEHInL0ZAbDNe0BKlbuXgvSPPJED6Iy3URPMGEl46rDvN0lCzjiOIfRo6zGjD7CaEpxYZBk5dejIkHZBWQZBkliBzuzEXfZCMFAW2TXmt8zzZB8wZDZD',
-          'Content-Type': 'application/json'
-      }
-  }).then(response => {
-      console.log('Mensaje enviado:', response.data);
-  }).catch(error => {
-      console.error('Error enviando mensaje:', error);
-  });
-}
+// accepts GET requests at the /webhook endpoint. You need this URL to setup webhook initially.
+// info on verification request payload: https://developers.facebook.com/docs/graph-api/webhooks/getting-started#verification-requests
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  // check the mode and token sent are correct
+  if (mode === "subscribe" && token === WEBHOOK_VERIFY_TOKEN) {
+    // respond with 200 OK and challenge token from the request
+    res.status(200).send(challenge);
+    console.log("Webhook verified successfully!");
+  } else {
+    // respond with '403 Forbidden' if verify tokens do not match
+    res.sendStatus(403);
+  }
+});
+
+app.get("/", (req, res) => {
+  res.send(`<pre>Nothing to see here.
+Checkout README.md to start.</pre>`);
+});
 
 app.listen(PORT, () => {
-    console.log(`Servidor escuchando en el puerto ${PORT}`);
+  console.log(`Server is listening on port: ${PORT}`);
 });
